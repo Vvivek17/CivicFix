@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { civicUsers } from "@/db/schema";
 import { assertSameSiteRequest, authErrorResponse, createSession, hashPassword } from "@/lib/auth";
 import { ensureSeed } from "@/lib/data";
+import { createMemoryUser, findMemoryUser } from "@/lib/memory-store";
 
 export async function POST(request: Request) {
   try {
@@ -15,10 +16,26 @@ export async function POST(request: Request) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) return Response.json({ error: "Please enter a valid email address." }, { status: 400 });
     if (password.length < 8 || password.length > 128) return Response.json({ error: "Use a password of at least 8 characters." }, { status: 400 });
     await ensureSeed();
-    const [existing] = await db.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, email));
+
+    let existing: any = null;
+    try {
+      const [row] = await db.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, email));
+      existing = row;
+    } catch {
+      existing = findMemoryUser(email);
+    }
+
     if (existing) return Response.json({ error: "An account with this email already exists." }, { status: 409 });
+
     // Public sign-up ALWAYS creates a citizen. Any "role" sent by the client is ignored.
-    const [user] = await db.insert(civicUsers).values({ name, email, passwordHash: hashPassword(password), role: "citizen" }).returning();
+    let user: any = null;
+    try {
+      const [created] = await db.insert(civicUsers).values({ name, email, passwordHash: hashPassword(password), role: "citizen" }).returning();
+      user = created;
+    } catch {
+      user = createMemoryUser(name, email, password, "citizen");
+    }
+
     await createSession(user.id);
     return Response.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } }, { status: 201 });
   } catch (error) {

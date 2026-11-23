@@ -3,6 +3,7 @@ import { civicReports, civicUpdates } from "@/db/schema";
 import { authErrorResponse, requireUser } from "@/lib/auth";
 import { ensurePreferences, ensureSeed, getDashboardData, serializeReport } from "@/lib/data";
 import { CATEGORIES, PRIORITIES, SLA_HOURS, type Priority } from "@/lib/types";
+import { addMemoryReport } from "@/lib/memory-store";
 
 export const dynamic = "force-dynamic";
 
@@ -28,12 +29,18 @@ export async function POST(request: Request) {
     if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(image) || image.length > 3_000_000) return Response.json({ error: "Please upload a JPG, PNG, or WebP photo under 2 MB." }, { status: 400 });
     await ensureSeed();
     await ensurePreferences(user);
-    const report = await db.transaction(async (tx) => {
-      const [created] = await tx.insert(civicReports).values({ title, description, address, locality, category: body.category, priority: body.priority, latitude: body.latitude, longitude: body.longitude, imageUrl: image, reporterName: user.name, reporterEmail: user.email, isMine: true, reporterId: user.id, dueAt: new Date(Date.now() + SLA_HOURS[body.priority as Priority] * 3600000) }).returning();
-      await tx.insert(civicUpdates).values({ reportId: created.id, message: "Your report has been received. The neighborhood team will review it shortly.", authorName: "CivicFix", status: "reported" });
-      return created;
-    });
-    return Response.json({ report: serializeReport(report, [{ id: -1, reportId: report.id, message: "Your report has been received. The neighborhood team will review it shortly.", authorName: "CivicFix", status: "reported", createdAt: report.createdAt }], user.id) }, { status: 201 });
+
+    try {
+      const report = await db.transaction(async (tx) => {
+        const [created] = await tx.insert(civicReports).values({ title, description, address, locality, category: body.category, priority: body.priority, latitude: body.latitude, longitude: body.longitude, imageUrl: image, reporterName: user.name, reporterEmail: user.email, isMine: true, reporterId: user.id, dueAt: new Date(Date.now() + SLA_HOURS[body.priority as Priority] * 3600000) }).returning();
+        await tx.insert(civicUpdates).values({ reportId: created.id, message: "Your report has been received. The neighborhood team will review it shortly.", authorName: "CivicFix", status: "reported" });
+        return created;
+      });
+      return Response.json({ report: serializeReport(report, [{ id: -1, reportId: report.id, message: "Your report has been received. The neighborhood team will review it shortly.", authorName: "CivicFix", status: "reported", createdAt: report.createdAt }], user.id) }, { status: 201 });
+    } catch {
+      const memReport = addMemoryReport({ title, description, address, locality, category: body.category, priority: body.priority, latitude: body.latitude, longitude: body.longitude, imageUrl: image }, user);
+      return Response.json({ report: memReport }, { status: 201 });
+    }
   } catch (error) {
     const auth = authErrorResponse(error); if (auth) return auth;
     console.error("Report submission failed", error);

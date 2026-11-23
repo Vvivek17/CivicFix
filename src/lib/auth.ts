@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import { and, eq, gt } from "drizzle-orm";
 import { db } from "@/db";
 import { civicSessions, civicUsers } from "@/db/schema";
+import { deleteMemorySession, getMemorySessionUser, saveMemorySession } from "@/lib/memory-store";
 
 export type Role = "citizen" | "authority";
 export interface SessionUser { id: number; name: string; email: string; role: Role }
@@ -43,7 +44,11 @@ async function sessionCookieOptions(expires: Date) {
 export async function createSession(userId: number) {
   const id = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400000);
-  await db.insert(civicSessions).values({ id, userId, expiresAt });
+  try {
+    await db.insert(civicSessions).values({ id, userId, expiresAt });
+  } catch {
+    saveMemorySession(id, userId, expiresAt);
+  }
   const store = await cookies();
   store.set(SESSION_COOKIE, id, await sessionCookieOptions(expiresAt));
 }
@@ -51,7 +56,13 @@ export async function createSession(userId: number) {
 export async function destroySession() {
   const store = await cookies();
   const id = store.get(SESSION_COOKIE)?.value;
-  if (id) await db.delete(civicSessions).where(eq(civicSessions.id, id));
+  if (id) {
+    try {
+      await db.delete(civicSessions).where(eq(civicSessions.id, id));
+    } catch {
+      deleteMemorySession(id);
+    }
+  }
   // Clear with the same attributes it was set with; a partitioned cookie is only removed by a matching one.
   store.set(SESSION_COOKIE, "", await sessionCookieOptions(new Date(0)));
 }
@@ -71,11 +82,11 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     const [row] = await db.select({ id: civicUsers.id, name: civicUsers.name, email: civicUsers.email, role: civicUsers.role })
       .from(civicSessions).innerJoin(civicUsers, eq(civicSessions.userId, civicUsers.id))
       .where(and(eq(civicSessions.id, id), gt(civicSessions.expiresAt, new Date())));
-    return row ? { ...row, role: row.role === "authority" ? "authority" : "citizen" } : null;
-  } catch (error) {
-    console.error("Failed to query user session:", error);
-    return null;
+    if (row) return { ...row, role: row.role === "authority" ? "authority" : "citizen" };
+  } catch {
+    // Database query failed, check in-memory sessions
   }
+  return getMemorySessionUser(id);
 }
 
 export class AuthError extends Error { constructor(public status: 401 | 403, message: string) { super(message); } }

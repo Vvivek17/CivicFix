@@ -4,6 +4,7 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { hashPassword, type SessionUser } from "@/lib/auth";
 import type { CivicReport, Preferences, ReportStatus, Priority } from "@/lib/types";
 import { CATEGORY_IMAGES, SLA_HOURS } from "@/lib/types";
+import { getMemoryPreferences, getMemoryReports, initMemorySeed } from "@/lib/memory-store";
 
 export const DEMO_ACCOUNTS = [
   { name: "Alex Morgan", email: "alex@civicfix.demo", password: "Citizen@123", role: "citizen" },
@@ -92,37 +93,42 @@ export async function ensureSchema() {
 }
 
 export async function ensureSeed() {
-  await ensureSchema();
-  await db.transaction(async (tx) => {
-    try {
-      await tx.execute(sql`select pg_advisory_xact_lock(8142026)`);
-    } catch {
-      // Advisory locks can be unsupported on serverless pooled connections
-    }
-    const existing = await tx.select({ id: civicReports.id }).from(civicReports).limit(1);
-    if (existing.length === 0) {
-      const inserted = await tx.insert(civicReports).values(examples.map(({ hours, mine, ...report }, index) => ({ ...report, imageUrl: CATEGORY_IMAGES[report.category], reporterName: neighbors[index % neighbors.length], reporterEmail: index % neighbors.length === 0 ? "alex@civicfix.demo" : `neighbor${index}@civicfix.demo`, isMine: mine, createdAt: new Date(Date.now() - hours * 3600000), updatedAt: new Date(Date.now() - Math.max(0.5, hours - 2) * 3600000), dueAt: new Date(Date.now() - hours * 3600000 + SLA_HOURS[report.priority as Priority] * 3600000), resolvedAt: report.status === "resolved" ? new Date(Date.now() - Math.max(0.5, hours - 2) * 3600000) : null }))).returning();
-      await tx.insert(civicUpdates).values(inserted.flatMap((report) => {
-        const updates = [{ reportId: report.id, message: "Report received and assigned to the neighborhood team.", authorName: "CivicFix", status: "reported", createdAt: report.createdAt }];
-        if (report.status !== "reported") updates.push({ reportId: report.id, message: report.status === "resolved" ? "Our team has completed the work and inspected the site. Thank you for helping improve your neighborhood!" : "The maintenance team has inspected the issue and scheduled a visit. We’ll share another update when the work is complete.", authorName: "BBMP Community Team", status: report.status, createdAt: report.updatedAt });
-        return updates;
-      }));
-    }
-    for (const account of DEMO_ACCOUNTS) {
-      const [existingUser] = await tx.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, account.email));
-      if (!existingUser) {
-        await tx.insert(civicUsers).values({ name: account.name, email: account.email, role: account.role, passwordHash: hashPassword(account.password) });
-      } else {
-        await tx.update(civicUsers).set({ passwordHash: hashPassword(account.password), role: account.role }).where(eq(civicUsers.id, existingUser.id));
+  initMemorySeed(examples, neighbors);
+  try {
+    await ensureSchema();
+    await db.transaction(async (tx) => {
+      try {
+        await tx.execute(sql`select pg_advisory_xact_lock(8142026)`);
+      } catch {
+        // Advisory locks can be unsupported on serverless pooled connections
       }
-    }
-    const [alex] = await tx.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, "alex@civicfix.demo"));
-    if (alex) {
-      await tx.update(civicReports).set({ reporterId: alex.id }).where(and(eq(civicReports.isMine, true), isNull(civicReports.reporterId)));
-    }
-    await tx.execute(sql`update civic_reports set due_at = created_at + make_interval(hours => case priority when 'high' then 48 when 'low' then 240 else 120 end) where due_at is null`);
-    await tx.execute(sql`update civic_reports set resolved_at = updated_at where status = 'resolved' and resolved_at is null`);
-  });
+      const existing = await tx.select({ id: civicReports.id }).from(civicReports).limit(1);
+      if (existing.length === 0) {
+        const inserted = await tx.insert(civicReports).values(examples.map(({ hours, mine, ...report }, index) => ({ ...report, imageUrl: CATEGORY_IMAGES[report.category], reporterName: neighbors[index % neighbors.length], reporterEmail: index % neighbors.length === 0 ? "alex@civicfix.demo" : `neighbor${index}@civicfix.demo`, isMine: mine, createdAt: new Date(Date.now() - hours * 3600000), updatedAt: new Date(Date.now() - Math.max(0.5, hours - 2) * 3600000), dueAt: new Date(Date.now() - hours * 3600000 + SLA_HOURS[report.priority as Priority] * 3600000), resolvedAt: report.status === "resolved" ? new Date(Date.now() - Math.max(0.5, hours - 2) * 3600000) : null }))).returning();
+        await tx.insert(civicUpdates).values(inserted.flatMap((report) => {
+          const updates = [{ reportId: report.id, message: "Report received and assigned to the neighborhood team.", authorName: "CivicFix", status: "reported", createdAt: report.createdAt }];
+          if (report.status !== "reported") updates.push({ reportId: report.id, message: report.status === "resolved" ? "Our team has completed the work and inspected the site. Thank you for helping improve your neighborhood!" : "The maintenance team has inspected the issue and scheduled a visit. We’ll share another update when the work is complete.", authorName: "BBMP Community Team", status: report.status, createdAt: report.updatedAt });
+          return updates;
+        }));
+      }
+      for (const account of DEMO_ACCOUNTS) {
+        const [existingUser] = await tx.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, account.email));
+        if (!existingUser) {
+          await tx.insert(civicUsers).values({ name: account.name, email: account.email, role: account.role, passwordHash: hashPassword(account.password) });
+        } else {
+          await tx.update(civicUsers).set({ passwordHash: hashPassword(account.password), role: account.role }).where(eq(civicUsers.id, existingUser.id));
+        }
+      }
+      const [alex] = await tx.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, "alex@civicfix.demo"));
+      if (alex) {
+        await tx.update(civicReports).set({ reporterId: alex.id }).where(and(eq(civicReports.isMine, true), isNull(civicReports.reporterId)));
+      }
+      await tx.execute(sql`update civic_reports set due_at = created_at + make_interval(hours => case priority when 'high' then 48 when 'low' then 240 else 120 end) where due_at is null`);
+      await tx.execute(sql`update civic_reports set resolved_at = updated_at where status = 'resolved' and resolved_at is null`);
+    });
+  } catch (err) {
+    console.warn("Database unavailable during ensureSeed, using memory fallback");
+  }
 }
 
 export function serializeReport(report: typeof civicReports.$inferSelect, updates: (typeof civicUpdates.$inferSelect)[] = [], viewerId?: number): CivicReport {
@@ -132,24 +138,37 @@ export function serializeReport(report: typeof civicReports.$inferSelect, update
 
 export async function ensurePreferences(user: SessionUser) {
   const id = String(user.id);
-  await db.insert(civicPreferences).values({ id, name: user.name, email: user.email }).onConflictDoNothing();
-  const [row] = await db.select().from(civicPreferences).where(eq(civicPreferences.id, id));
-  return row;
+  try {
+    await db.insert(civicPreferences).values({ id, name: user.name, email: user.email }).onConflictDoNothing();
+    const [row] = await db.select().from(civicPreferences).where(eq(civicPreferences.id, id));
+    return row || getMemoryPreferences(user);
+  } catch {
+    return getMemoryPreferences(user);
+  }
 }
 
 export async function getDashboardData(user: SessionUser): Promise<{ reports: CivicReport[]; preferences: Preferences }> {
-  await ensureSeed();
-  const [reports, updates, preferences] = await Promise.all([
-    db.select().from(civicReports).orderBy(desc(civicReports.createdAt)),
-    db.select().from(civicUpdates).orderBy(desc(civicUpdates.createdAt)),
-    ensurePreferences(user),
-  ]);
-  return { reports: reports.map((report) => serializeReport(report, updates.filter((update) => update.reportId === report.id), user.id)), preferences: { name: user.name, email: user.email, neighborhood: preferences.neighborhood, notifications: preferences.notifications, following: preferences.following, voted: preferences.voted } };
+  try {
+    await ensureSeed();
+    const [reports, updates, preferences] = await Promise.all([
+      db.select().from(civicReports).orderBy(desc(civicReports.createdAt)),
+      db.select().from(civicUpdates).orderBy(desc(civicUpdates.createdAt)),
+      ensurePreferences(user),
+    ]);
+    return { reports: reports.map((report) => serializeReport(report, updates.filter((update) => update.reportId === report.id), user.id)), preferences: { name: user.name, email: user.email, neighborhood: preferences.neighborhood, notifications: preferences.notifications, following: preferences.following, voted: preferences.voted } };
+  } catch {
+    initMemorySeed(examples, neighbors);
+    return { reports: getMemoryReports(user.id), preferences: getMemoryPreferences(user) };
+  }
 }
 
 export async function getReport(id: number, viewerId?: number) {
-  const [report] = await db.select().from(civicReports).where(eq(civicReports.id, id));
-  if (!report) return null;
-  const updates = await db.select().from(civicUpdates).where(eq(civicUpdates.reportId, id)).orderBy(desc(civicUpdates.createdAt));
-  return serializeReport(report, updates, viewerId);
+  try {
+    const [report] = await db.select().from(civicReports).where(eq(civicReports.id, id));
+    if (!report) return null;
+    const updates = await db.select().from(civicUpdates).where(eq(civicUpdates.reportId, id)).orderBy(desc(civicUpdates.createdAt));
+    return serializeReport(report, updates, viewerId);
+  } catch {
+    return getMemoryReports(viewerId).find((r) => r.id === id) || null;
+  }
 }

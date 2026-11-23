@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { civicPreferences, civicUsers } from "@/db/schema";
 import { assertSameSiteRequest, authErrorResponse, createSession, hashPassword } from "@/lib/auth";
 import { ensureSeed } from "@/lib/data";
+import { createMemoryUser, findMemoryUser } from "@/lib/memory-store";
 
 export const dynamic = "force-dynamic";
 
@@ -67,29 +68,42 @@ export async function POST(request: Request) {
     await ensureSeed();
 
     // 4. Check if account already exists
-    const [existing] = await db.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, email));
+    let existing: any = null;
+    try {
+      const [row] = await db.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, email));
+      existing = row;
+    } catch {
+      existing = findMemoryUser(email);
+    }
+
     if (existing) {
       return Response.json({ error: "An authority employee account with this email already exists." }, { status: 409 });
     }
 
-    // 4. Register as an Authority User
-    const [user] = await db.insert(civicUsers).values({
-      name,
-      email,
-      passwordHash: hashPassword(password),
-      role: "authority",
-    }).returning();
+    // 5. Register as an Authority User
+    let user: any = null;
+    try {
+      const [created] = await db.insert(civicUsers).values({
+        name,
+        email,
+        passwordHash: hashPassword(password),
+        role: "authority",
+      }).returning();
+      user = created;
 
-    // 5. Initialize Authority preferences with their designated ward
-    await db.insert(civicPreferences).values({
-      id: String(user.id),
-      name: user.name,
-      email: user.email,
-      neighborhood: ward,
-      notifications: true,
-      following: [],
-      voted: [],
-    }).onConflictDoNothing();
+      // Initialize Authority preferences with their designated ward
+      await db.insert(civicPreferences).values({
+        id: String(user.id),
+        name: user.name,
+        email: user.email,
+        neighborhood: ward,
+        notifications: true,
+        following: [],
+        voted: [],
+      }).onConflictDoNothing();
+    } catch {
+      user = createMemoryUser(name, email, password, "authority");
+    }
 
     // 6. Create active session cookie for seamless onboarding
     await createSession(user.id);
