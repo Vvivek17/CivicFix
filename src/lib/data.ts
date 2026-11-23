@@ -26,9 +26,79 @@ const examples = [
   { title: "Pothole repaired on the service road", category: "Roads & potholes", status: "resolved", priority: "high", address: "Domlur service road, opposite the tech park", locality: "Domlur", latitude: 12.9548, longitude: 77.6358, description: "A deep pothole on the service road has been repaired. The road team filled and leveled the surface, making the daily commute safer for everyone.", upvotes: 17, hours: 120, mine: false },
 ];
 
+let schemaEnsured = false;
+
+export async function ensureSchema() {
+  if (schemaEnsured) return;
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS civic_reports (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(120) NOT NULL,
+      description TEXT NOT NULL,
+      category VARCHAR(40) NOT NULL,
+      status VARCHAR(24) NOT NULL DEFAULT 'reported',
+      priority VARCHAR(16) NOT NULL DEFAULT 'medium',
+      address VARCHAR(240) NOT NULL,
+      locality VARCHAR(80) NOT NULL,
+      latitude DOUBLE PRECISION NOT NULL,
+      longitude DOUBLE PRECISION NOT NULL,
+      image_url TEXT NOT NULL,
+      reporter_name VARCHAR(100) NOT NULL DEFAULT 'Alex Morgan',
+      reporter_email VARCHAR(160) NOT NULL DEFAULT 'alex@civicfix.demo',
+      is_mine BOOLEAN NOT NULL DEFAULT false,
+      upvotes INTEGER NOT NULL DEFAULT 0,
+      reporter_id INTEGER,
+      due_at TIMESTAMP WITH TIME ZONE,
+      resolved_at TIMESTAMP WITH TIME ZONE,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS civic_updates (
+      id SERIAL PRIMARY KEY,
+      report_id INTEGER NOT NULL REFERENCES civic_reports(id) ON DELETE CASCADE,
+      message TEXT NOT NULL,
+      author_name VARCHAR(100) NOT NULL DEFAULT 'BBMP Community Team',
+      status VARCHAR(24),
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS civic_preferences (
+      id VARCHAR(40) PRIMARY KEY,
+      name VARCHAR(100) NOT NULL DEFAULT 'Alex Morgan',
+      email VARCHAR(160) NOT NULL DEFAULT 'alex@civicfix.demo',
+      neighborhood VARCHAR(80) NOT NULL DEFAULT 'Koramangala',
+      notifications BOOLEAN NOT NULL DEFAULT true,
+      following JSONB NOT NULL DEFAULT '[]'::jsonb,
+      voted JSONB NOT NULL DEFAULT '[]'::jsonb
+    )`,
+    `CREATE TABLE IF NOT EXISTS civic_users (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      email VARCHAR(160) NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role VARCHAR(16) NOT NULL DEFAULT 'citizen',
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS civic_sessions (
+      id VARCHAR(64) PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES civic_users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+    )`
+  ];
+
+  for (const statement of statements) {
+    await db.execute(sql.raw(statement));
+  }
+  schemaEnsured = true;
+}
+
 export async function ensureSeed() {
+  await ensureSchema();
   await db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(8142026)`);
+    try {
+      await tx.execute(sql`select pg_advisory_xact_lock(8142026)`);
+    } catch {
+      // Advisory locks can be unsupported on serverless pooled connections
+    }
     const existing = await tx.select({ id: civicReports.id }).from(civicReports).limit(1);
     if (existing.length === 0) {
       const inserted = await tx.insert(civicReports).values(examples.map(({ hours, mine, ...report }, index) => ({ ...report, imageUrl: CATEGORY_IMAGES[report.category], reporterName: neighbors[index % neighbors.length], reporterEmail: index % neighbors.length === 0 ? "alex@civicfix.demo" : `neighbor${index}@civicfix.demo`, isMine: mine, createdAt: new Date(Date.now() - hours * 3600000), updatedAt: new Date(Date.now() - Math.max(0.5, hours - 2) * 3600000), dueAt: new Date(Date.now() - hours * 3600000 + SLA_HOURS[report.priority as Priority] * 3600000), resolvedAt: report.status === "resolved" ? new Date(Date.now() - Math.max(0.5, hours - 2) * 3600000) : null }))).returning();
@@ -40,10 +110,16 @@ export async function ensureSeed() {
     }
     for (const account of DEMO_ACCOUNTS) {
       const [existingUser] = await tx.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, account.email));
-      if (!existingUser) await tx.insert(civicUsers).values({ name: account.name, email: account.email, role: account.role, passwordHash: hashPassword(account.password) });
+      if (!existingUser) {
+        await tx.insert(civicUsers).values({ name: account.name, email: account.email, role: account.role, passwordHash: hashPassword(account.password) });
+      } else {
+        await tx.update(civicUsers).set({ passwordHash: hashPassword(account.password), role: account.role }).where(eq(civicUsers.id, existingUser.id));
+      }
     }
     const [alex] = await tx.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, "alex@civicfix.demo"));
-    await tx.update(civicReports).set({ reporterId: alex.id }).where(and(eq(civicReports.isMine, true), isNull(civicReports.reporterId)));
+    if (alex) {
+      await tx.update(civicReports).set({ reporterId: alex.id }).where(and(eq(civicReports.isMine, true), isNull(civicReports.reporterId)));
+    }
     await tx.execute(sql`update civic_reports set due_at = created_at + make_interval(hours => case priority when 'high' then 48 when 'low' then 240 else 120 end) where due_at is null`);
     await tx.execute(sql`update civic_reports set resolved_at = updated_at where status = 'resolved' and resolved_at is null`);
   });

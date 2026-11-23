@@ -34,8 +34,9 @@ export function verifyPassword(password: string, stored: string) {
 async function sessionCookieOptions(expires: Date) {
   const requestHeaders = await headers();
   const https = [requestHeaders.get("x-forwarded-proto"), requestHeaders.get("origin"), requestHeaders.get("referer")].some((value) => value?.trim().toLowerCase().startsWith("https"));
+  const isCrossSite = requestHeaders.get("sec-fetch-site") === "cross-site";
   return https
-    ? { httpOnly: true, secure: true, sameSite: "none" as const, partitioned: true, path: "/", expires }
+    ? { httpOnly: true, secure: true, sameSite: isCrossSite ? ("none" as const) : ("lax" as const), partitioned: isCrossSite, path: "/", expires }
     : { httpOnly: true, secure: false, sameSite: "lax" as const, path: "/", expires };
 }
 
@@ -66,10 +67,15 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const store = await cookies();
   const id = store.get(SESSION_COOKIE)?.value;
   if (!id || !/^[a-f0-9]{64}$/.test(id)) return null;
-  const [row] = await db.select({ id: civicUsers.id, name: civicUsers.name, email: civicUsers.email, role: civicUsers.role })
-    .from(civicSessions).innerJoin(civicUsers, eq(civicSessions.userId, civicUsers.id))
-    .where(and(eq(civicSessions.id, id), gt(civicSessions.expiresAt, new Date())));
-  return row ? { ...row, role: row.role === "authority" ? "authority" : "citizen" } : null;
+  try {
+    const [row] = await db.select({ id: civicUsers.id, name: civicUsers.name, email: civicUsers.email, role: civicUsers.role })
+      .from(civicSessions).innerJoin(civicUsers, eq(civicSessions.userId, civicUsers.id))
+      .where(and(eq(civicSessions.id, id), gt(civicSessions.expiresAt, new Date())));
+    return row ? { ...row, role: row.role === "authority" ? "authority" : "citizen" } : null;
+  } catch (error) {
+    console.error("Failed to query user session:", error);
+    return null;
+  }
 }
 
 export class AuthError extends Error { constructor(public status: 401 | 403, message: string) { super(message); } }

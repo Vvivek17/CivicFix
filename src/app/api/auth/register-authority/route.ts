@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { civicPreferences, civicUsers } from "@/db/schema";
 import { assertSameSiteRequest, authErrorResponse, createSession, hashPassword } from "@/lib/auth";
+import { ensureSeed } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
@@ -62,7 +63,10 @@ export async function POST(request: Request) {
     const govCertificateId = `GOI-UIDAI-IND-2026-${Math.floor(100000 + Math.random() * 900000)}`;
     const activeDlTxnId = digilockerTxnId || `DL-GOI-UIDAI-2026-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    // 3. Check if account already exists
+    // 3. Ensure database schema and seed
+    await ensureSeed();
+
+    // 4. Check if account already exists
     const [existing] = await db.select({ id: civicUsers.id }).from(civicUsers).where(eq(civicUsers.email, email));
     if (existing) {
       return Response.json({ error: "An authority employee account with this email already exists." }, { status: 409 });
