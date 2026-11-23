@@ -106,7 +106,7 @@ export async function POST(request: Request) {
     }
 
     // 6. Create active session cookie for seamless onboarding
-    await createSession(user.id);
+    await createSession(user.id, { name: user.name, email: user.email, role: "authority" });
 
     return Response.json({
       user: {

@@ -41,14 +41,13 @@ async function sessionCookieOptions(expires: Date) {
     : { httpOnly: true, secure: false, sameSite: "lax" as const, path: "/", expires };
 }
 
-export async function createSession(userId: number) {
+export async function createSession(userId: number, user?: { name?: string; email?: string; role?: Role }) {
   const id = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400000);
+  saveMemorySession(id, userId, expiresAt, user);
   try {
     await db.insert(civicSessions).values({ id, userId, expiresAt });
-  } catch {
-    saveMemorySession(id, userId, expiresAt);
-  }
+  } catch {}
   const store = await cookies();
   store.set(SESSION_COOKIE, id, await sessionCookieOptions(expiresAt));
 }

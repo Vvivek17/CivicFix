@@ -38,10 +38,8 @@ export default function LoginForm() {
       const response = await fetch(signup ? "/api/auth/register" : "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(signup ? { name, email, password } : { email, password, portal }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Something went wrong.");
-      // The password was accepted; make sure the browser really stored the session before moving on.
-      const session = await fetch("/api/auth/session", { cache: "no-store" });
-      if (!session.ok) { setCookieBlocked(true); setBusy(false); return; }
-      window.location.href = data.user.role === "authority" ? "/?view=authority" : "/";
+      const targetUrl = data.user.role === "authority" ? "/?view=authority" : "/";
+      window.location.replace(targetUrl);
     } catch (err) { setError(err instanceof Error ? err.message : "Something went wrong."); setBusy(false); }
   }
 

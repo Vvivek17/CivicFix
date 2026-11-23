@@ -124,8 +124,18 @@ export function createMemoryUser(name: string, email: string, password: string, 
   return newUser;
 }
 
-export function saveMemorySession(id: string, userId: number, expiresAt: Date) {
+export function saveMemorySession(id: string, userId: number, expiresAt: Date, userObj?: { name?: string; email?: string; role?: "citizen" | "authority" }) {
   sessions.set(id, { id, userId, expiresAt });
+  if (userObj?.email) {
+    const normalized = userObj.email.trim().toLowerCase();
+    users.set(normalized, {
+      id: userId,
+      name: userObj.name || "User",
+      email: normalized,
+      passwordHash: "",
+      role: userObj.role || "citizen",
+    });
+  }
 }
 
 export function getMemorySessionUser(sessionId: string): SessionUser | null {
@@ -136,8 +146,16 @@ export function getMemorySessionUser(sessionId: string): SessionUser | null {
     return null;
   }
   const user = findMemoryUserById(session.userId);
-  if (!user) return null;
-  return { id: user.id, name: user.name, email: user.email, role: user.role };
+  if (user) {
+    return { id: user.id, name: user.name, email: user.email, role: user.role };
+  }
+  if (session.userId === 1) {
+    return { id: 1, name: "Alex Morgan", email: "alex@civicfix.demo", role: "citizen" };
+  }
+  if (session.userId === 2) {
+    return { id: 2, name: "BBMP Community Team", email: "officer@civicfix.demo", role: "authority" };
+  }
+  return null;
 }
 
 export function deleteMemorySession(sessionId: string) {

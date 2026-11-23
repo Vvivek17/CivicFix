@@ -36,7 +36,7 @@ export async function POST(request: Request) {
       user = createMemoryUser(name, email, password, "citizen");
     }
 
-    await createSession(user.id);
+    await createSession(user.id, { name: user.name, email: user.email, role: user.role });
     return Response.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } }, { status: 201 });
   } catch (error) {
     const auth = authErrorResponse(error);

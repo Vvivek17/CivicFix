@@ -35,7 +35,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "This account does not have authority access." }, { status: 403 });
     }
 
-    await createSession(user.id);
+    await createSession(user.id, { name: user.name, email: user.email, role: user.role });
     return Response.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
   } catch (error) {
     const auth = authErrorResponse(error);
