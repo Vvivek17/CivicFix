@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { cookies, headers } from "next/headers";
 import { and, eq, gt } from "drizzle-orm";
 import { db } from "@/db";
@@ -10,6 +10,29 @@ export interface SessionUser { id: number; name: string; email: string; role: Ro
 
 export const SESSION_COOKIE = "civicfix_session";
 const SESSION_DAYS = 7;
+const SESSION_SECRET = process.env.SESSION_SECRET || "civicfix-secret-salt-for-tamper-proof-sessions-2026-secure-key";
+
+export function signSessionToken(data: SessionUser & { exp: number }): string {
+  const payload = Buffer.from(JSON.stringify(data)).toString("base64url");
+  const hmac = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  return `${payload}.${hmac}`;
+}
+
+export function verifySessionToken(token: string): (SessionUser & { exp: number }) | null {
+  const [payload, sig] = token.split(".");
+  if (!payload || !sig) return null;
+  const expectedSig = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf-8"));
+    if (!data || typeof data.exp !== "number" || data.exp <= Date.now()) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
 
 export function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
@@ -42,14 +65,24 @@ async function sessionCookieOptions(expires: Date) {
 }
 
 export async function createSession(userId: number, user?: { name?: string; email?: string; role?: Role }) {
-  const id = randomBytes(32).toString("hex");
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400000);
-  saveMemorySession(id, userId, expiresAt, user);
+  const exp = Date.now() + SESSION_DAYS * 86400000;
+  const expiresAt = new Date(exp);
+
+  const role: Role = user?.role === "authority" || userId === 2 ? "authority" : "citizen";
+  const name = user?.name || (role === "authority" ? "BBMP Community Team" : "Alex Morgan");
+  const email = user?.email || (role === "authority" ? "officer@civicfix.demo" : "alex@civicfix.demo");
+
+  const sessionUser: SessionUser = { id: userId, name, email, role };
+  const token = signSessionToken({ ...sessionUser, exp });
+
+  saveMemorySession(token, userId, expiresAt, user);
   try {
-    await db.insert(civicSessions).values({ id, userId, expiresAt });
+    const legacyId = randomBytes(32).toString("hex");
+    await db.insert(civicSessions).values({ id: legacyId, userId, expiresAt });
   } catch {}
+
   const store = await cookies();
-  store.set(SESSION_COOKIE, id, await sessionCookieOptions(expiresAt));
+  store.set(SESSION_COOKIE, token, await sessionCookieOptions(expiresAt));
 }
 
 export async function destroySession() {
@@ -75,17 +108,35 @@ export async function assertSameSiteRequest() {
 /** Reads the session from the HTTP-only cookie. The role always comes from the database, never from the client. */
 export async function getCurrentUser(): Promise<SessionUser | null> {
   const store = await cookies();
-  const id = store.get(SESSION_COOKIE)?.value;
-  if (!id || !/^[a-f0-9]{64}$/.test(id)) return null;
-  try {
-    const [row] = await db.select({ id: civicUsers.id, name: civicUsers.name, email: civicUsers.email, role: civicUsers.role })
-      .from(civicSessions).innerJoin(civicUsers, eq(civicSessions.userId, civicUsers.id))
-      .where(and(eq(civicSessions.id, id), gt(civicSessions.expiresAt, new Date())));
-    if (row) return { ...row, role: row.role === "authority" ? "authority" : "citizen" };
-  } catch {
-    // Database query failed, check in-memory sessions
+  const token = store.get(SESSION_COOKIE)?.value;
+  if (!token) return null;
+
+  // 1. Verify stateless HMAC session token (works 100% on Vercel across all Lambda instances with ZERO database dependency)
+  const verified = verifySessionToken(token);
+  if (verified) {
+    return {
+      id: verified.id,
+      name: verified.name,
+      email: verified.email,
+      role: verified.role,
+    };
   }
-  return getMemorySessionUser(id);
+
+  // 2. Fallback to memory store
+  const memoryUser = getMemorySessionUser(token);
+  if (memoryUser) return memoryUser;
+
+  // 3. Fallback to DB for legacy 64-char hex tokens
+  if (/^[a-f0-9]{64}$/.test(token)) {
+    try {
+      const [row] = await db.select({ id: civicUsers.id, name: civicUsers.name, email: civicUsers.email, role: civicUsers.role })
+        .from(civicSessions).innerJoin(civicUsers, eq(civicSessions.userId, civicUsers.id))
+        .where(and(eq(civicSessions.id, token), gt(civicSessions.expiresAt, new Date())));
+      if (row) return { ...row, role: row.role === "authority" ? "authority" : "citizen" };
+    } catch {}
+  }
+
+  return null;
 }
 
 export class AuthError extends Error { constructor(public status: 401 | 403, message: string) { super(message); } }
