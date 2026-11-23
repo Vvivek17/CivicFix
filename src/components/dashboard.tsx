@@ -145,6 +145,7 @@ export default function Dashboard({ initialReports, initialPreferences, user }: 
     setReports((current) => current.map((report) => report.id === id ? data.report : report)); setPreferences(data.preferences);
     if (body.action === "follow") setToast({ message: data.preferences.following.includes(id) ? "You’re following this report. Stay in the loop!" : "You’ve unfollowed this report." });
     if (body.action === "status" || body.action === "update") setToast({ message: body.action === "status" ? "Status updated. The community is in the loop." : "Your update has been posted." });
+    if (body.action === "deadline") setToast({ message: "Resolution deadline updated successfully." });
   }
 
   async function vote(id: number) {

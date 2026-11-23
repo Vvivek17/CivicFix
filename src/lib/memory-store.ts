@@ -1,5 +1,5 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import type { CivicReport, Preferences, Priority } from "./types";
+import type { CivicReport, Preferences, Priority, ReportStatus } from "./types";
 import { CATEGORY_IMAGES, SLA_HOURS } from "./types";
 
 export type Role = "citizen" | "authority";
@@ -199,18 +199,140 @@ export function addMemoryReport(report: any, user: SessionUser): CivicReport {
   return newReport;
 }
 
+export function getMemoryReport(id: number, viewerId?: number): CivicReport | null {
+  const reports = globalForStore.__civicMemoryReports || [];
+  const found = reports.find((r) => r.id === id);
+  if (!found) return null;
+  return {
+    ...found,
+    isMine: viewerId !== undefined && (viewerId === 1 && found.isMine),
+  };
+}
+
+export function updateMemoryReport(
+  id: number,
+  action: string,
+  data: { status?: ReportStatus; message?: string; dueAt?: string },
+  user: SessionUser
+): { report: CivicReport | null; preferences: Preferences } {
+  const reports = globalForStore.__civicMemoryReports || [];
+  const report = reports.find((r) => r.id === id);
+  const userPrefs = getMemoryPreferences(user);
+
+  if (!report) {
+    return { report: null, preferences: userPrefs };
+  }
+
+  const now = new Date().toISOString();
+
+  if (action === "vote") {
+    const already = userPrefs.voted.includes(id);
+    userPrefs.voted = already ? userPrefs.voted.filter((x) => x !== id) : [...userPrefs.voted, id];
+    report.upvotes = Math.max(0, report.upvotes + (already ? -1 : 1));
+    report.updatedAt = now;
+  } else if (action === "follow") {
+    const already = userPrefs.following.includes(id);
+    userPrefs.following = already ? userPrefs.following.filter((x) => x !== id) : [...userPrefs.following, id];
+  } else if (action === "status" && data.status) {
+    report.status = data.status;
+    report.resolvedAt = data.status === "resolved" ? (report.resolvedAt || now) : null;
+    report.updatedAt = now;
+    const msg = data.message?.trim() || `Status updated to ${data.status} by ${user.name}.`;
+    report.updates = [
+      {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        reportId: id,
+        message: msg,
+        authorName: user.name,
+        status: data.status,
+        createdAt: now,
+      },
+      ...report.updates,
+    ];
+  } else if (action === "deadline" && data.dueAt) {
+    report.dueAt = data.dueAt;
+    report.updatedAt = now;
+    const note = data.message?.trim() ? ` ${data.message.trim().slice(0, 500)}` : "";
+    const deadlineLabel = new Date(data.dueAt).toLocaleString("en-IN", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "Asia/Kolkata",
+    });
+    report.updates = [
+      {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        reportId: id,
+        message: `Resolution deadline set to ${deadlineLabel}.${note}`,
+        authorName: user.name,
+        status: report.status,
+        createdAt: now,
+      },
+      ...report.updates,
+    ];
+  } else if (action === "update" && data.message) {
+    report.updatedAt = now;
+    report.updates = [
+      {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        reportId: id,
+        message: data.message.trim(),
+        authorName: user.name,
+        status: report.status,
+        createdAt: now,
+      },
+      ...report.updates,
+    ];
+  }
+
+  saveMemoryPreferences(String(user.id), userPrefs);
+
+  return {
+    report: {
+      ...report,
+      isMine: user.id === 1 && report.isMine,
+    },
+    preferences: userPrefs,
+  };
+}
+
+export function saveMemoryPreferences(key: string, data: Partial<Preferences>): Preferences {
+  const current = prefs.get(key) || {
+    name: "User",
+    email: "user@civicfix.demo",
+    neighborhood: "Koramangala",
+    notifications: true,
+    following: [],
+    voted: [],
+  };
+  const updated: Preferences = { ...current, ...data };
+  prefs.set(key, updated);
+  return updated;
+}
+
 export function getMemoryPreferences(user: SessionUser): Preferences {
   const key = String(user.id);
   const existing = prefs.get(key);
   if (existing) return existing;
 
+  const isAuthority = user.role === "authority";
   const initial: Preferences = {
     name: user.name,
     email: user.email,
-    neighborhood: "Koramangala",
+    neighborhood: isAuthority ? "South Zone Central" : "Koramangala",
     notifications: true,
     following: [],
     voted: [],
+    department: isAuthority ? "Ward Infrastructure & Engineering" : undefined,
+    designation: isAuthority ? "Assistant Executive Engineer (AEE)" : undefined,
+    badgeId: isAuthority ? "BBMP-W151-8302" : undefined,
+    kgidNumber: isAuthority ? "KGID-884920" : undefined,
+    ward: isAuthority ? "Ward 151 - Koramangala" : undefined,
+    zone: isAuthority ? "South Zone" : undefined,
+    phone: isAuthority ? "+91 94806 88120" : undefined,
+    officeAddress: isAuthority ? "BBMP Sub-Division Office, 8th Main Rd, 4th Block, Koramangala, Bengaluru - 560034" : undefined,
+    controlRoomHotline: isAuthority ? "080-22660000 / 1533 (Toll Free)" : undefined,
+    onCallStatus: isAuthority ? "Active Duty" : undefined,
+    governmentGuaranteeReference: isAuthority ? "Verified Municipal Officer · Gazetted Order KA-HUD-2024-918" : undefined,
   };
   prefs.set(key, initial);
   return initial;

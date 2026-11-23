@@ -40,6 +40,17 @@ export const civicPreferences = pgTable("civic_preferences", {
   notifications: boolean("notifications").notNull().default(true),
   following: jsonb("following").$type<number[]>().notNull().default([]),
   voted: jsonb("voted").$type<number[]>().notNull().default([]),
+  department: varchar("department", { length: 100 }),
+  designation: varchar("designation", { length: 100 }),
+  badgeId: varchar("badge_id", { length: 60 }),
+  kgidNumber: varchar("kgid_number", { length: 60 }),
+  ward: varchar("ward", { length: 100 }),
+  zone: varchar("zone", { length: 60 }),
+  phone: varchar("phone", { length: 40 }),
+  officeAddress: text("office_address"),
+  controlRoomHotline: varchar("control_room_hotline", { length: 80 }),
+  onCallStatus: varchar("on_call_status", { length: 60 }),
+  governmentGuaranteeReference: varchar("government_guarantee_reference", { length: 120 }),
 });
 
 export const civicUsers = pgTable("civic_users", {

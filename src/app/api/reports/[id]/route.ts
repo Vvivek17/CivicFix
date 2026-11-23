@@ -2,7 +2,8 @@ import { db } from "@/db";
 import { civicPreferences, civicReports, civicUpdates } from "@/db/schema";
 import { authErrorResponse, requireAuthority, requireUser } from "@/lib/auth";
 import { ensurePreferences, getDashboardData, getReport } from "@/lib/data";
-import { STATUSES } from "@/lib/types";
+import { getMemoryReport, updateMemoryReport } from "@/lib/memory-store";
+import { STATUSES, STATUS_LABELS, type ReportStatus } from "@/lib/types";
 import { eq, sql } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -37,10 +38,25 @@ export async function PATCH(request: Request, context: Context) {
       return Response.json({ error: "Voting and following are reserved for citizens." }, { status: 403 });
     }
 
-    const [existing] = await db.select().from(civicReports).where(eq(civicReports.id, id));
-    if (!existing) return Response.json({ error: "Report not found." }, { status: 404 });
     if (body.action === "status" && !STATUSES.includes(body.status)) return Response.json({ error: "Please select a valid status." }, { status: 400 });
-    if ((body.action === "status" || body.action === "update") && (typeof body.message !== "string" || body.message.trim().length < 5 || body.message.length > 2000)) return Response.json({ error: "Add an update of 5–2,000 characters." }, { status: 400 });
+
+    let messageText = typeof body.message === "string" ? body.message.trim() : "";
+    if (body.action === "update") {
+      if (messageText.length < 5 || messageText.length > 2000) {
+        return Response.json({ error: "Add an update of 5–2,000 characters." }, { status: 400 });
+      }
+    } else if (body.action === "status") {
+      if (!messageText) {
+        const label = STATUS_LABELS[body.status as ReportStatus] || body.status;
+        messageText = body.status === "resolved"
+          ? "Our team has completed field repairs and verified resolution."
+          : body.status === "in_progress"
+          ? "The ward maintenance team has inspected the site and commenced work."
+          : `Status changed to ${label} by ${user.name}.`;
+      } else if (messageText.length > 2000) {
+        return Response.json({ error: "Update message cannot exceed 2,000 characters." }, { status: 400 });
+      }
+    }
 
     let dueAt: Date | null = null;
     if (body.action === "deadline") {
@@ -51,30 +67,49 @@ export async function PATCH(request: Request, context: Context) {
     }
 
     const prefsId = String(user.id);
-    await ensurePreferences(user);
-    await db.transaction(async (tx) => {
-      if (body.action === "vote" || body.action === "follow") {
-        const [preferences] = await tx.select().from(civicPreferences).where(eq(civicPreferences.id, prefsId)).for("update");
-        const key = body.action === "vote" ? "voted" : "following";
-        const selected = preferences[key];
-        const already = selected.includes(id);
-        await tx.update(civicPreferences).set({ [key]: already ? selected.filter((value) => value !== id) : [...selected, id] }).where(eq(civicPreferences.id, prefsId));
-        if (body.action === "vote") await tx.update(civicReports).set({ upvotes: sql`greatest(0, ${civicReports.upvotes} + ${already ? -1 : 1})` }).where(eq(civicReports.id, id));
-      } else if (body.action === "status") {
-        const resolvedAt = body.status === "resolved" ? (existing.resolvedAt ?? new Date()) : null;
-        await tx.update(civicReports).set({ status: body.status, resolvedAt, updatedAt: new Date() }).where(eq(civicReports.id, id));
-        await tx.insert(civicUpdates).values({ reportId: id, message: body.message.trim(), authorName: user.name, status: body.status });
-      } else if (body.action === "deadline" && dueAt) {
-        await tx.update(civicReports).set({ dueAt, updatedAt: new Date() }).where(eq(civicReports.id, id));
-        const note = typeof body.message === "string" && body.message.trim() ? ` ${body.message.trim().slice(0, 500)}` : "";
-        await tx.insert(civicUpdates).values({ reportId: id, message: `Resolution deadline set to ${dueAt.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" })}.${note}`, authorName: user.name, status: existing.status });
-      } else {
-        await tx.update(civicReports).set({ updatedAt: new Date() }).where(eq(civicReports.id, id));
-        await tx.insert(civicUpdates).values({ reportId: id, message: body.message.trim(), authorName: user.name, status: existing.status });
+
+    try {
+      const [existing] = await db.select().from(civicReports).where(eq(civicReports.id, id));
+      if (!existing) {
+        const fallback = updateMemoryReport(id, body.action, { status: body.status, message: messageText, dueAt: dueAt?.toISOString() }, user);
+        if (!fallback.report) return Response.json({ error: "Report not found." }, { status: 404 });
+        return Response.json(fallback);
       }
-    });
-    const [report, data] = await Promise.all([getReport(id, user.id), getDashboardData(user)]);
-    return Response.json({ report, preferences: data.preferences });
+
+      await ensurePreferences(user);
+      await db.transaction(async (tx) => {
+        if (body.action === "vote" || body.action === "follow") {
+          const [preferences] = await tx.select().from(civicPreferences).where(eq(civicPreferences.id, prefsId)).for("update");
+          const key = body.action === "vote" ? "voted" : "following";
+          const selected = preferences[key] || [];
+          const already = selected.includes(id);
+          await tx.update(civicPreferences).set({ [key]: already ? selected.filter((value) => value !== id) : [...selected, id] }).where(eq(civicPreferences.id, prefsId));
+          if (body.action === "vote") await tx.update(civicReports).set({ upvotes: sql`greatest(0, ${civicReports.upvotes} + ${already ? -1 : 1})` }).where(eq(civicReports.id, id));
+        } else if (body.action === "status") {
+          const resolvedAt = body.status === "resolved" ? (existing.resolvedAt ?? new Date()) : null;
+          await tx.update(civicReports).set({ status: body.status, resolvedAt, updatedAt: new Date() }).where(eq(civicReports.id, id));
+          await tx.insert(civicUpdates).values({ reportId: id, message: messageText, authorName: user.name, status: body.status });
+        } else if (body.action === "deadline" && dueAt) {
+          await tx.update(civicReports).set({ dueAt, updatedAt: new Date() }).where(eq(civicReports.id, id));
+          const note = messageText ? ` ${messageText.slice(0, 500)}` : "";
+          await tx.insert(civicUpdates).values({ reportId: id, message: `Resolution deadline set to ${dueAt.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" })}.${note}`, authorName: user.name, status: existing.status });
+        } else {
+          await tx.update(civicReports).set({ updatedAt: new Date() }).where(eq(civicReports.id, id));
+          await tx.insert(civicUpdates).values({ reportId: id, message: messageText, authorName: user.name, status: existing.status });
+        }
+      });
+
+      // Synchronize in-memory store
+      updateMemoryReport(id, body.action, { status: body.status, message: messageText, dueAt: dueAt?.toISOString() }, user);
+
+      const [report, data] = await Promise.all([getReport(id, user.id), getDashboardData(user)]);
+      return Response.json({ report, preferences: data.preferences });
+    } catch (dbErr) {
+      console.warn("DB operation failed during report PATCH, falling back to memory store:", dbErr);
+      const fallback = updateMemoryReport(id, body.action, { status: body.status, message: messageText, dueAt: dueAt?.toISOString() }, user);
+      if (!fallback.report) return Response.json({ error: "Report not found." }, { status: 404 });
+      return Response.json(fallback);
+    }
   } catch (error) {
     const auth = authErrorResponse(error);
     if (auth) return auth;

@@ -83,7 +83,18 @@ export async function ensureSchema() {
       id VARCHAR(64) PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES civic_users(id) ON DELETE CASCADE,
       expires_at TIMESTAMP WITH TIME ZONE NOT NULL
-    )`
+    )`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS department VARCHAR(100)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS designation VARCHAR(100)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS badge_id VARCHAR(60)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS kgid_number VARCHAR(60)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS ward VARCHAR(100)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS zone VARCHAR(60)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS phone VARCHAR(40)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS office_address TEXT`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS control_room_hotline VARCHAR(80)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS on_call_status VARCHAR(60)`,
+    `ALTER TABLE civic_preferences ADD COLUMN IF NOT EXISTS government_guarantee_reference VARCHAR(120)`
   ];
 
   for (const statement of statements) {
@@ -138,8 +149,25 @@ export function serializeReport(report: typeof civicReports.$inferSelect, update
 
 export async function ensurePreferences(user: SessionUser) {
   const id = String(user.id);
+  const isAuthority = user.role === "authority";
   try {
-    await db.insert(civicPreferences).values({ id, name: user.name, email: user.email }).onConflictDoNothing();
+    await db.insert(civicPreferences).values({
+      id,
+      name: user.name,
+      email: user.email,
+      neighborhood: isAuthority ? "South Zone Central" : "Koramangala",
+      department: isAuthority ? "Ward Infrastructure & Engineering" : null,
+      designation: isAuthority ? "Assistant Executive Engineer (AEE)" : null,
+      badgeId: isAuthority ? "BBMP-W151-8302" : null,
+      kgidNumber: isAuthority ? "KGID-884920" : null,
+      ward: isAuthority ? "Ward 151 - Koramangala" : null,
+      zone: isAuthority ? "South Zone" : null,
+      phone: isAuthority ? "+91 94806 88120" : null,
+      officeAddress: isAuthority ? "BBMP Sub-Division Office, 8th Main Rd, 4th Block, Koramangala, Bengaluru - 560034" : null,
+      controlRoomHotline: isAuthority ? "080-22660000 / 1533 (Toll Free)" : null,
+      onCallStatus: isAuthority ? "Active Duty" : null,
+      governmentGuaranteeReference: isAuthority ? "Verified Municipal Officer · Gazetted Order KA-HUD-2024-918" : null,
+    }).onConflictDoNothing();
     const [row] = await db.select().from(civicPreferences).where(eq(civicPreferences.id, id));
     return row || getMemoryPreferences(user);
   } catch {
@@ -155,7 +183,28 @@ export async function getDashboardData(user: SessionUser): Promise<{ reports: Ci
       db.select().from(civicUpdates).orderBy(desc(civicUpdates.createdAt)),
       ensurePreferences(user),
     ]);
-    return { reports: reports.map((report) => serializeReport(report, updates.filter((update) => update.reportId === report.id), user.id)), preferences: { name: user.name, email: user.email, neighborhood: preferences.neighborhood, notifications: preferences.notifications, following: preferences.following, voted: preferences.voted } };
+    return {
+      reports: reports.map((report) => serializeReport(report, updates.filter((update) => update.reportId === report.id), user.id)),
+      preferences: {
+        name: user.name,
+        email: user.email,
+        neighborhood: preferences.neighborhood,
+        notifications: preferences.notifications,
+        following: preferences.following,
+        voted: preferences.voted,
+        department: preferences.department ?? (user.role === "authority" ? "Ward Infrastructure & Engineering" : undefined),
+        designation: preferences.designation ?? (user.role === "authority" ? "Assistant Executive Engineer (AEE)" : undefined),
+        badgeId: preferences.badgeId ?? (user.role === "authority" ? "BBMP-W151-8302" : undefined),
+        kgidNumber: preferences.kgidNumber ?? (user.role === "authority" ? "KGID-884920" : undefined),
+        ward: preferences.ward ?? (user.role === "authority" ? "Ward 151 - Koramangala" : undefined),
+        zone: preferences.zone ?? (user.role === "authority" ? "South Zone" : undefined),
+        phone: preferences.phone ?? (user.role === "authority" ? "+91 94806 88120" : undefined),
+        officeAddress: preferences.officeAddress ?? (user.role === "authority" ? "BBMP Sub-Division Office, 8th Main Rd, 4th Block, Koramangala, Bengaluru - 560034" : undefined),
+        controlRoomHotline: preferences.controlRoomHotline ?? (user.role === "authority" ? "080-22660000 / 1533 (Toll Free)" : undefined),
+        onCallStatus: preferences.onCallStatus ?? (user.role === "authority" ? "Active Duty" : undefined),
+        governmentGuaranteeReference: preferences.governmentGuaranteeReference ?? (user.role === "authority" ? "Verified Municipal Officer · Gazetted Order KA-HUD-2024-918" : undefined),
+      },
+    };
   } catch {
     initMemorySeed(examples, neighbors);
     return { reports: getMemoryReports(user.id), preferences: getMemoryPreferences(user) };

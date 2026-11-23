@@ -44,7 +44,58 @@ export interface Preferences {
   notifications: boolean;
   following: number[];
   voted: number[];
+  // Official Municipal Authority Profile (Required for Authority Staff)
+  department?: string;
+  designation?: string;
+  badgeId?: string;
+  kgidNumber?: string;
+  ward?: string;
+  zone?: string;
+  phone?: string;
+  officeAddress?: string;
+  controlRoomHotline?: string;
+  onCallStatus?: string;
+  governmentGuaranteeReference?: string;
 }
+
+export const AUTHORITY_DEPARTMENTS = [
+  "Ward Infrastructure & Engineering",
+  "Solid Waste Management (SWM)",
+  "Stormwater Drains & Lakes",
+  "Public Health & Sanitation",
+  "Streetlighting & Electrical",
+  "Town Planning & Revenue",
+  "Traffic & Transport Planning",
+  "Horticulture & Parks",
+] as const;
+
+export const AUTHORITY_DESIGNATIONS = [
+  "Assistant Executive Engineer (AEE)",
+  "Executive Engineer (EE)",
+  "Junior Engineer (JE)",
+  "Senior Health Inspector (SHI)",
+  "Ward Maintenance Superintendent",
+  "Chief Sanitation Officer",
+  "Disaster Management Coordinator",
+] as const;
+
+export const AUTHORITY_ZONES = [
+  "South Zone",
+  "East Zone",
+  "West Zone",
+  "Mahadevapura Zone",
+  "Bommanahalli Zone",
+  "R.R. Nagar Zone",
+  "Yelahanka Zone",
+  "Dasarahalli Zone",
+] as const;
+
+export const ON_CALL_STATUSES = [
+  "Active Duty",
+  "On Field Inspection",
+  "Standby / Emergency Response",
+  "Off-Duty",
+] as const;
 
 export const STATUS_LABELS: Record<ReportStatus, string> = {
   reported: "Reported",
